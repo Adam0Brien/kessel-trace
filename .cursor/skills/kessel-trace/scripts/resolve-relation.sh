@@ -9,8 +9,10 @@
 #   bash resolve-relation.sh rbac_roles_read stage
 #
 # Resolution strategy:
-#   1. If RBAC_CONFIG_DIR is set or ~/rbac-config exists, parse KSL files locally.
-#   2. Otherwise, fetch KSL files from GitHub raw content.
+#   1. If RBAC_CONFIG_DIR is set and contains configs/$ENV/schemas/src, parse that checkout.
+#   2. Otherwise, use third_party/rbac-config under the repo that contains .gitmodules.
+#   3. Otherwise, fetch KSL files from GitHub raw content.
+# Never searches $HOME.
 #
 # Outputs: JSON object with v2_relation, v1_permission, app, resource, verb, ksl_file, type.
 
@@ -29,14 +31,34 @@ ENV="${2:-prod}"
 # For add_unified_permission: the pattern is app_resource_verb, so the first segment is the app.
 INFERRED_APP="${RELATION%%_*}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Walk up from this script until the kessel-trace checkout (.gitmodules) is found.
+find_repo_root() {
+    local dir="$SCRIPT_DIR"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -f "$dir/.gitmodules" ]]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+        dir="$(dirname "$dir")"
+    done
+    return 1
+}
+
 RBAC_CONFIG_DIR="${RBAC_CONFIG_DIR:-}"
+if [[ -n "$RBAC_CONFIG_DIR" && ! -d "$RBAC_CONFIG_DIR/configs/$ENV/schemas/src" ]]; then
+    echo "RBAC_CONFIG_DIR is set but has no configs/$ENV/schemas/src: $RBAC_CONFIG_DIR" >&2
+    RBAC_CONFIG_DIR=""
+fi
 if [[ -z "$RBAC_CONFIG_DIR" ]]; then
-    for candidate in "$HOME/rbac-config" "$HOME/projects/rbac-config" "$HOME/projects/infra/rbac-config"; do
+    repo_root=""
+    if repo_root="$(find_repo_root)"; then
+        candidate="$repo_root/third_party/rbac-config"
         if [[ -d "$candidate/configs/$ENV/schemas/src" ]]; then
             RBAC_CONFIG_DIR="$candidate"
-            break
         fi
-    done
+    fi
 fi
 
 resolve_from_local() {
@@ -189,8 +211,12 @@ sys.exit(1)
     exit 1
 }
 
+# A present checkout is authoritative. GitHub is only for a missing submodule.
 if [[ -n "$RBAC_CONFIG_DIR" ]]; then
-    resolve_from_local && exit 0
+    if resolve_from_local; then
+        exit 0
+    fi
+    exit 1
 fi
 
 resolve_from_github

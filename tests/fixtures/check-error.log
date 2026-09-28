@@ -1,0 +1,1 @@
+ERROR ts=2026-01-01T00:00:00Z operation=kessel.inventory.v1beta2.KesselInventoryService/Check args={resource_type:"workspace" resource_id:"abc" relation:"notifications_notifications_edit"} code=403 reason=PermissionDenied latency=0.012

@@ -2,7 +2,13 @@
 
 Concise reference for diagnosing Check/CheckSelf/CheckForUpdate errors.
 
-Source: [project-kessel/inventory-api](https://github.com/project-kessel/inventory-api)
+Source checkout: `third_party/inventory-api` (override with `INVENTORY_API_DIR`).
+Upstream: [project-kessel/inventory-api](https://github.com/project-kessel/inventory-api).
+
+`project-kessel/relations-api` is deprecated and is not a submodule. Check evaluation
+in this pin goes through inventory-api's relations repository. Prefer `authz.impl: spicedb`.
+The check-request `relation` field is still the permission name and is unrelated to that
+deprecated service.
 
 ---
 
@@ -113,8 +119,9 @@ with reason `VALIDATOR` *before* reaching the error mapping middleware.
 
 ## KSL Permission Model
 
-Permissions are defined in KSL files at `configs/<env>/schemas/src/<app>.ksl` in the
-[rbac-config](https://github.com/project-kessel/rbac-config) repo.
+Permissions are defined in KSL files at
+`third_party/rbac-config/configs/<env>/schemas/src/<app>.ksl`
+(override the checkout with `RBAC_CONFIG_DIR`).
 
 ### Two mapping types
 
@@ -138,12 +145,15 @@ Permissions are defined in KSL files at `configs/<env>/schemas/src/<app>.ksl` in
 ### Permission resolution chain
 
 ```
-V2 relation (in CheckSelf request)
-  -> KSL schema directive
+relation field on the Check request (permission name)
+  -> KSL schema directive in third_party/rbac-config
   -> V1 permission (app:resource:verb)
   -> Role JSON access[].permission (exact or wildcard match)
   -> User's group membership and role bindings
-  -> SpiceDB relationship graph evaluation
+  -> inventory-api RelationsRepository
+       authz.impl=spicedb -> SpiceDB CheckPermission (authz.spicedb.endpoint)
+       authz.impl=kessel  -> legacy relations-api client (deprecated; do not vendor)
+       authz.impl=allow-all -> allow
 ```
 
 ### Wildcard matching in role definitions
@@ -165,15 +175,19 @@ Role `access[].permission` values can use wildcards:
 
 ---
 
-## Key Source Paths (in inventory-api repo)
+## Key Source Paths
+
+Paths are relative to `third_party/inventory-api` (or `INVENTORY_API_DIR`).
 
 | Path | Purpose |
 |------|---------|
 | `api/kessel/inventory/v1beta2/` | Proto definitions and generated Go code |
-| `internal/middleware/` | Validation, auth, error mapping middleware |
+| `internal/middleware/error_mapping.go` | Maps domain errors to gRPC status codes |
 | `internal/biz/model/errors.go` | Sentinel domain errors |
 | `internal/biz/usecase/resources/` | Business logic including auth errors |
-| `internal/biz/usecase/metaauthorizer/` | Meta authorization layer |
-| `docs/error-handling-guidelines.md` | Error handling conventions |
+| `internal/biz/usecase/metaauthorizer/enforcement.go` | `ErrMetaAuthorizerUnavailable` when the authorizer is nil |
+| `internal/config/relations/options.go` | `authz.impl`: `allow-all`, `kessel`, or `spicedb` |
+| `internal/data/relations_repository_factory.go` | Selects the relations repository from `authz.impl` |
+| `internal/data/spicedb_relations_repository.go` | SpiceDB `CheckPermission` client |
 | `docs/runbooks/` | Operational runbooks |
-| `.inventory-api.yaml` | Default local config |
+| `.inventory-api.yaml` | Default local config (`authz.impl: allow-all`) |

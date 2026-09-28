@@ -137,19 +137,22 @@ caller's identity from the authentication context.
 
 **Signature**: `code=403` with `ErrMetaAuthorizationDenied` or `reason=PermissionDenied`
 
-**Root cause**: The user/subject does not have the requested relation on the target resource.
-The SpiceDB/Relations API returned "not permitted".
+**Root cause**: The subject does not have the requested permission on the target resource.
+With `authz.impl: spicedb`, `SpiceDBRelationsRepository.Check` calls SpiceDB
+`CheckPermission` and treats `PERMISSIONSHIP_HAS_PERMISSION` as allowed
+(`third_party/inventory-api/internal/data/spicedb_relations_repository.go`).
+The check-request `relation` field is that permission name.
 
 **Investigation**:
-1. Use `resolve-relation.sh` to find the V1 permission and granting roles.
+1. Use `scripts/resolve-relation.sh` to find the V1 permission and granting roles in `third_party/rbac-config`.
 2. Check if the user's org has the correct roles assigned via RBAC groups.
 3. For `platform_default` roles, verify the default group is configured.
 4. For `admin_default` roles, verify the user is an org admin.
-5. Check if the resource's relationships are correctly configured in SpiceDB.
+5. Check the SpiceDB relationship tuples for the resource (`authz.spicedb.endpoint`).
 
 **Common fixes**:
 - Assign the user to a group with the appropriate role.
-- Verify the resource was reported to inventory (relations exist in SpiceDB).
+- Verify the resource was reported to inventory so the SpiceDB tuples exist.
 - Check if the workspace hierarchy is correct (parent workspace chain).
 - For new permissions, ensure the rbac-config role version was bumped and deployed.
 
@@ -159,18 +162,38 @@ The SpiceDB/Relations API returned "not permitted".
 
 **Signature**: `code=500` with `ErrMetaAuthorizerUnavailable`
 
-**Root cause**: Inventory-api could not reach the Relations API (SpiceDB) to perform the
-authorization check. This is an infrastructure issue, not a permissions issue.
+**Root cause**: The meta authorizer pointer is nil. `EnforceMetaAuthzObject` returns
+`ErrMetaAuthorizerUnavailable` in that case
+(`third_party/inventory-api/internal/biz/usecase/metaauthorizer/enforcement.go`), and
+`MapError` maps it to gRPC `Internal` / `meta authorizer unavailable`
+(`third_party/inventory-api/internal/middleware/error_mapping.go`). This is not a
+relations-api outage. `project-kessel/relations-api` is deprecated and is not part of
+this repo.
+
+Check evaluation uses the repository selected by `authz.impl`
+(`third_party/inventory-api/internal/config/relations/options.go` and
+`third_party/inventory-api/internal/data/relations_repository_factory.go`):
+
+- `spicedb` — `SpiceDBRelationsRepository` talks to `authz.spicedb.endpoint`
+  (token or `token-file`, plus `schema-file`). A SpiceDB failure is wrapped as
+  `error invoking CheckPermission in SpiceDB`. Deployments set this with
+  `INVENTORY_API_AUTHZ_IMPL` and `INVENTORY_API_AUTHZ_SPICEDB_ENDPOINT`
+  (`deploy/kessel-inventory-ephem.yaml`).
+- `allow-all` — local default in `.inventory-api.yaml`; checks are not enforced.
+- `kessel` — legacy client. `GRPCRelationsRepository` dials `authz.kessel.url`, which
+  is the deprecated relations-api. Do not start by debugging a relations-api deployment.
+  Confirm `authz.impl` is `spicedb` unless this environment is still explicitly on the
+  legacy client.
 
 **Investigation**:
-1. Check Relations API pod health in the same namespace.
-2. Check network connectivity between inventory-api and relations-api.
-3. Look for connection timeout or DNS resolution errors in logs.
+1. Confirm a meta authorizer is wired. A nil authorizer is this error, not a down dependency.
+2. If the log says `error invoking CheckPermission in SpiceDB`, check `authz.spicedb.endpoint`, the bearer token (`authz.spicedb.token` or `authz.spicedb.token-file`), and `authz.spicedb.schema-file`.
+3. Read `authz.impl` (or `INVENTORY_API_AUTHZ_IMPL`). Expect `spicedb`. Treat `kessel` as the deprecated relations-api client.
 
 **Common fixes**:
-- Restart the Relations API pods if they're unhealthy.
-- Check if a deployment is in progress that might have caused a brief outage.
-- Verify the `authz.kessel.url` configuration points to the correct service.
+- Wire the meta authorizer so `EnforceMetaAuthzObject` is not called with a nil authorizer.
+- For SpiceDB check failures, restore reachability to `authz.spicedb.endpoint` and confirm the schema file is mounted (ephemeral deploy uses `/etc/spicedb-schema/schema.zed`).
+- If `authz.impl` is still `kessel`, move it to `spicedb` rather than restarting relations-api.
 
 ---
 

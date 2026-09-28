@@ -11,8 +11,18 @@ disable-model-invocation: true
 # kessel-trace: Inventory-API Error Diagnosis
 
 Diagnose `project-kessel/inventory-api` authorization check errors by parsing structured
-logs, resolving V2 relations to V1 permissions via rbac-config, and producing actionable
-root-cause analysis.
+logs, resolving the check-request `relation` field to a V1 permission via rbac-config, and
+producing actionable root-cause analysis.
+
+Scripts live in `scripts/` next to this file. Call them by that directory, not by a
+workspace-root path and not by anything under `$HOME`. Upstream source is vendored in
+this repo:
+
+- `third_party/rbac-config` — KSL schemas and role JSON. Override with `RBAC_CONFIG_DIR`.
+- `third_party/inventory-api` — inventory-api source. Override with `INVENTORY_API_DIR`.
+
+`relations-api` is deprecated and is not vendored. The `relation` field on a Check log
+line is the permission name on the request. Keep parsing it.
 
 ## Diagnosis Workflow
 
@@ -22,27 +32,29 @@ Follow these steps in order. Skip steps that don't apply.
 
 **If the user pasted a log line**, proceed to Step 2.
 
-**If the user asks to check live logs**, fetch them with the Kubernetes MCP:
+**If the user asks to check live logs**, run the fetch script next to this skill:
 
-```
-CallMcpTool: user-kubernetes / kubectl_logs
-  resourceType: "deployment"
-  name: "inventory-api"          # adjust if user specifies different name
-  namespace: <ask user or use "kessel">
-  tail: 200
-  since: "15m"
+```bash
+SKILL_DIR="<directory containing this SKILL.md>"
+bash "$SKILL_DIR/scripts/fetch-check-errors.sh"
 ```
 
-Then filter the output for lines containing `Check` operations (Check, CheckSelf,
-CheckForUpdate, CheckBulk, CheckSelfBulk, CheckForUpdateBulk) that have `ERROR` level
-or non-zero error codes.
+Flags: `-n` namespace (default `kessel`), `-d` deployment (default `inventory-api`),
+`-c` kube context, `-s` since, `-t` tail. Those defaults are service names, not a
+machine path.
+
+A Kubernetes logs MCP tool is optional when one is connected. Do not require a
+particular MCP server id.
+
+Then filter for Check operations (Check, CheckSelf, CheckForUpdate, CheckBulk,
+CheckSelfBulk, CheckForUpdateBulk) at `ERROR` level or with a non-zero error code.
+`fetch-check-errors.sh` already applies that filter.
 
 ### Step 2: Parse the log line
 
-Run the parser script on the log line to extract structured fields:
-
 ```bash
-echo '<LOG_LINE>' | bash .cursor/skills/kessel-trace/scripts/parse-log.sh
+SKILL_DIR="<directory containing this SKILL.md>"
+echo '<LOG_LINE>' | bash "$SKILL_DIR/scripts/parse-log.sh"
 ```
 
 This outputs JSON with: `level`, `timestamp`, `operation`, `resource_type`, `resource_id`,
@@ -66,34 +78,24 @@ with root causes and fixes for each.
 
 ### Step 4: Resolve the permission context
 
-If the log contains a `relation` field, resolve it to the V1 permission and granting roles:
+If the log contains a `relation` field, resolve it to the V1 permission and granting roles.
+The script reads `third_party/rbac-config` (or `RBAC_CONFIG_DIR`) and does not search `$HOME`.
 
 ```bash
-bash .cursor/skills/kessel-trace/scripts/resolve-relation.sh <RELATION> [prod|stage]
+SKILL_DIR="<directory containing this SKILL.md>"
+bash "$SKILL_DIR/scripts/resolve-relation.sh" <RELATION> [prod|stage]
 ```
 
 This outputs JSON with: `v2_relation`, `v1_permission`, `app`, `resource`, `verb`,
 `ksl_file`, `type`.
 
-If the script can't resolve it (no local rbac-config clone), fall back to the GitHub MCP:
+Role JSON for that app is `third_party/rbac-config/configs/<env>/roles/<APP>.json`.
+Scan `access[].permission` for matches (exact or wildcard `app:*:*`, `app:resource:*`).
 
-1. Fetch the KSL file for the app (first segment of the relation before `_`):
-   ```
-   CallMcpTool: user-github / get_file_contents
-     owner: "project-kessel"
-     repo: "rbac-config"
-     path: "configs/prod/schemas/src/<APP>.ksl"
-   ```
-2. Search for `v2_perm:'<RELATION>'` in the output to find the `add_v1_based_permission`
-   directive and extract `app`, `resource`, `verb`.
-3. Fetch the roles file to find which roles grant that permission:
-   ```
-   CallMcpTool: user-github / get_file_contents
-     owner: "project-kessel"
-     repo: "rbac-config"
-     path: "configs/prod/roles/<APP>.json"
-   ```
-4. Scan `access[].permission` for matches (exact or wildcard `app:*:*`, `app:resource:*`).
+If the submodule was not checked out, the script falls back to GitHub raw content.
+A GitHub file-contents MCP tool is an optional extra in that case. Do not require a
+particular MCP server id. Prefer initializing submodules (`git submodule update --init`)
+so resolution stays local.
 
 ### Step 5: Produce the diagnosis
 
@@ -134,13 +136,16 @@ Present a structured diagnosis using this template:
 ### Step 6: Offer follow-up actions
 
 After presenting the diagnosis, offer:
-- "Look up the calling service's source code for how it constructs this request?"
+- "Look up how inventory-api handles this in `third_party/inventory-api` (or `$INVENTORY_API_DIR`)?"
 - "Fetch more recent logs to see if this error is recurring?"
 - "Check which roles/groups the affected user has?"
 
 ## Key Knowledge
 
 ### Relation naming conventions
+
+The check-request `relation` string is still the permission name. It is not the
+deprecated relations-api service.
 
 - `add_v1_based_permission`: V2 name differs from V1. Pattern: `v2_perm:'<custom_name>'`.
   Example: `notifications_notifications_edit` maps to `notifications:notifications:write`.
@@ -166,3 +171,4 @@ The first segment of a relation name (before the first `_`) usually identifies t
 
 - For the full error pattern catalog: [reference/error-patterns.md](reference/error-patterns.md)
 - For inventory-api architecture details: [reference/inventory-api-architecture.md](reference/inventory-api-architecture.md)
+- Vendored source: `third_party/inventory-api` and `third_party/rbac-config` at the repo root
