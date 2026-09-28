@@ -1,0 +1,6 @@
+[submodule "third_party/rbac-config"]
+	path = third_party/rbac-config
+	url = https://github.com/project-kessel/rbac-config.git
+[submodule "third_party/inventory-api"]
+	path = third_party/inventory-api
+	url = https://github.com/project-kessel/inventory-api.git
